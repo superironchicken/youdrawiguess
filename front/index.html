@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>画板 demo</title>
+<style>
+  canvas { border: 1px solid #ccc; cursor: crosshair; }
+</style>
+</head>
+<body>
+	<button id="createbtn">创建房间</button>
+	<input id="roominput" placeholder="输入房间号">
+	<button id="joinbtn">加入房间</button>
+	<span id="myroom">当前没有房间</span>
+	<div id="toolbar">
+		<input type="color" id="colorpick" value="#ff0000">选择颜色</input>
+		<input type="range" id="widthpick" min="1" max="10" value="4">1-10</input>
+		<button id="clearbtn">清空画布 </button>
+		<button id="undobtn">撤销上一笔 </button>
+	</div>
+  	<canvas id="board" width="800" height="500"></canvas>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+  // 1. 拿到画布元素和它的 2D 绘图上下文
+  const canvas = document.getElementById('board');
+  const ctx = canvas.getContext('2d');
+  const socket = io();
+  socket.on('stroke',(s)=>{
+	  strokes.push(s);
+	  redraw();
+  });
+
+  // 2. 记录"笔"的状态
+  let drawing = false;    // 是否正在画
+  let lastX = 0, lastY = 0;
+  let strokes = [];
+  let myRoom = null;
+  let current = null;
+  let pen = { color: '#ff0000' , width: 4 };
+  document.getElementById('colorpick').addEventListener('input', (e) =>
+	  {
+		  pen.color = e.target.value
+	  });
+
+  document.getElementById('widthpick').addEventListener('input', (e) =>
+	  {
+		  pen.width = Number(e.target.value)
+	  });
+  document.getElementById('clearbtn').addEventListener('click', (e) =>
+	  {
+		  strokes = [];
+		  redraw();
+	  });
+  document.getElementById('undobtn').addEventListener('click', (e) =>
+          {
+                  strokes.pop();
+                  redraw();
+          });
+  document.getElementById('createbtn').addEventListener('click', (e)=>{
+	  socket.emit('create-room',(code) => {
+	  	myRoom = code;
+		document.getElementById('myroom').textContent = '房间号：' + code;
+	  });
+  });
+
+  document.getElementById('joinbtn').addEventListener('click',(e)=>{
+	  const code = document.getElementById('roominput').value;
+	  socket.emit('join-room',code ,(res)=>{
+	  	if(res.ok) { 
+			myRoom = code;
+			document.getElementById('myroom').textContent = '房间号：' + code;
+		}
+	  }); 
+  });
+  function drawStroke(s)  {
+	  ctx.strokeStyle = s.color;
+	  ctx.lineWidth = s.width;
+	  ctx.lineCap = 'round';
+	  ctx.lineJoin = 'round';
+	  ctx.beginPath();
+	  ctx.moveTo(s.points[0].x , s.points[0].y);
+	  for (let i =1; i < s.points.length; i++){
+		  ctx.lineTo(s.points[i].x , s.points[i].y);
+	  }
+	  ctx.stroke();
+  }
+  function redraw() {
+	  ctx.clearRect(0,0,canvas.width,canvas.height);
+	  strokes.forEach(drawStroke);
+  }
+
+  // 3. 把浏览器坐标换算成画布内部坐标
+  function pos(e) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top
+    };
+  }
+
+    // 4. 按下鼠标 → 开始画
+  canvas.addEventListener('mousedown', (e) => {
+    drawing = true;
+    const p = pos(e);
+    lastX = p.x; lastY = p.y;
+    current = {color : pen.color , width : pen.width , points: [p] };
+    strokes.push(current);
+  });
+
+  // 5. 移动鼠标 → 从上一个点画线到当前点
+  canvas.addEventListener('mousemove', (e) => {
+    if (!drawing) return;
+    const p = pos(e);
+    ctx.strokeStyle = pen.color ;
+    current.points.push({ x : p.x , y : p.y});
+    ctx.lineWidth = pen.width ;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(lastX, lastY);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    lastX = p.x; lastY = p.y;
+  });
+
+  // 6. 松开鼠标 → 停止
+  canvas.addEventListener('mouseup', () => { 
+	  drawing = false;
+	  socket.emit('stroke',{room:myRoom , stroke:current});
+	  current=null;
+  });
+  canvas.addEventListener('mouseleave', () => { drawing = false; });
+
+</script>
+</body>
+</html>
