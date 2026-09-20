@@ -1,298 +1,33 @@
 <!DOCTYPE html>
 <html>
-<head>
-<meta charset="utf-8">
-<title>画板 demo</title>
-<style>
-  canvas { border: 1px solid #ccc; cursor: crosshair; }
-  #scorepanel { position: fixed; right: 10px; top: 10px; border: 1px solid #ccc; padding: 10px; background: #fff; min-width: 140px; }
-  #scorelist { list-style: none; padding: 0; margin: 5px 0 0 0; }
-  #scorelist li { padding: 2px 0; }
-  #panel { margin-top: 10px; }
-</style>
-</head>
-<body>
-	<input id="nameinput" placeholder="你的名字">
-	<button id="createbtn">创建房间</button>
-	<input id="roominput" placeholder="输入房间号">
-	<button id="joinbtn">加入房间</button>
-	<span id="myroom">当前没有房间</span>
-	<button id="startbtn">开始游戏（房主）</button>
-	<span id="status">等待加入</span>
-	<span id="countdown"></span>
-	<div id="toolbar">
-		<input type="color" id="colorpick" value="#ff0000">选择颜色</input>
-		<input type="range" id="widthpick" min="1" max="10" value="4">1-10</input>
-		<button id="clearbtn">清空画布 </button>
-		<button id="undobtn">撤销上一笔 </button>
-	</div>
-  	<canvas id="board" width="800" height="500"></canvas>
-	<div id="panel"></div>
-	<div id="scorepanel">
-		<div id="scoretitle">分数榜（先到100分胜）</div>
-		<ul id="scorelist"></ul>
-	</div>
-
-<script src="/socket.io/socket.io.js"></script>
-<script>
-  // 1. 拿到画布元素和它的 2D 绘图上下文
-  const canvas = document.getElementById('board');
-  const ctx = canvas.getContext('2d');
-  const socket = io();
-  socket.on('stroke',(s)=>{
-	  strokes.push(s);
-	  redraw();
-  });
-
-let myId = null;
-let phase = 'waiting';
-let isDrawer = false;
-let word = null;
-let choices = [];
-let reveal = null;
-let players = [];
-let voteData = null;
-let myVotes = {};
-let gameOver = null;
-socket.on('connect',()=>{
-	myId = socket.id;
-});
-
-socket.on('game-state',(state)=>{
-	phase = state.phase;
-	isDrawer = (myId === state.drawerId);
-	players = state.players;
-	if (phase === 'choosing') { reveal = null; voteData = null; gameOver = null; }
-	updateStatus(state);
-	renderPanel();
-	renderScores();
-});
-
-socket.on('word-choices',(chs)=>{
-	choices = chs;
-	renderPanel();
-});
-
-socket.on('your-word',(w)=>{
-	word = w;
-	renderPanel();
-});
-
-socket.on('countdown',(t)=>{
-	document.getElementById('countdown').textContent = t + 's';
-});
-
-socket.on('round-reveal',(data)=>{
-	reveal = data;
-	renderPanel();
-	renderScores();
-});
-
-socket.on('voting-start',(data)=>{
-	voteData = data;
-	myVotes = {};
-	renderPanel();
-});
-
-socket.on('game-over',(data)=>{
-	gameOver = data;
-	renderPanel();
-	renderScores();
-});
-
-socket.on('room-update',(pls)=>{
-	players = pls;
-	renderScores();
-});
-
-socket.on('clear-board',()=>{
-	strokes = [];
-	redraw();
-});
-
-function updateStatus(state) {
-	const el = document.getElementById('status');
-	const drawer = state.players.find(p => p.id === state.drawerId);
-	const who = drawer ? drawer.name : '?';
-	if (state.phase === 'waiting') {
-		el.textContent = '等待开始（至少2人）';
-	} else if (state.phase === 'choosing') {
-		el.textContent = isDrawer ? '请选一个词' : '画师(' + who + ')正在选词...';
-	} else if (state.phase === 'drawing') {
-		el.textContent = isDrawer ? '你是画师，开始画吧！' : '画师是：' + who;
-	} else if (state.phase === 'answering') {
-		el.textContent = isDrawer ? '等待大家提交答案...' : '你猜这是什么？';
-	} else if (state.phase === 'voting') {
-		el.textContent = '投票：每个答案是否合理';
-	} else if (state.phase === 'roundEnd') {
-		el.textContent = '回合结束';
-	}
-}
-
-function renderPanel() {
-	const panel = document.getElementById('panel');
-	if (gameOver) {
-		panel.innerHTML = `<b>${gameOver.winner}</b> 赢得了游戏！<br>房主可再次点击开始游戏`;
-	} else if (phase === 'choosing' && isDrawer) {
-		panel.innerHTML = choices.map((w, i) =>
-			`<button onclick="pickWord(${i})">${w}</button>`).join('');
-	} else if (phase === 'drawing' && isDrawer) {
-		panel.innerHTML = `你要画的是：<b>${word}</b> <button onclick="doneDrawing()">画完了</button>`;
-	} else if (phase === 'answering' && !isDrawer) {
-		panel.innerHTML = '答案：<input id="answerinput"> <button onclick="submitAnswer()">提交</button>';
-	} else if (phase === 'voting' && voteData) {
-		const targets = [];
-		for (const a of voteData.answers) {
-			if (a.playerId !== myId) {
-				targets.push({ id: a.playerId, label: `${a.name} 的答案是：${a.text}` });
-			}
-		}
-		if (voteData.drawerId !== myId) {
-			const drawer = players.find(p => p.id === voteData.drawerId);
-			targets.push({ id: voteData.drawerId, label: `${drawer ? drawer.name : '画师'} 的画` });
-		}
-		panel.innerHTML = `<b>标准答案是：${voteData.word}</b><br>` +
-			targets.map(t => `
-				<div style="margin:4px 0">
-					${t.label}，合理吗？
-					<button ${myVotes[t.id] === true ? 'disabled' : ''} onclick="vote('${t.id}',true)">合理</button>
-					<button ${myVotes[t.id] === false ? 'disabled' : ''} onclick="vote('${t.id}',false)">不合理</button>
-				</div>`).join('');
-	} else if (phase === 'roundEnd' && reveal) {
-		panel.innerHTML = `答案是：<b>${reveal.word}</b><br>` +
-			reveal.answers.map(a => `${a.name}：${a.text}`).join('<br>') +
-			'<br>' + reveal.scores.map(s => `${s.name} 本回合 +${s.gained}`).join('<br>') +
-			'<br>6秒后开始下一轮';
-	}
-}
-
-function pickWord(i) { socket.emit('choose-word', myRoom, i); }
-function doneDrawing() { socket.emit('done-drawing', myRoom); }
-function submitAnswer() {
-	const input = document.getElementById('answerinput');
-	if (!input.value.trim()) return;
-	socket.emit('answer', myRoom, input.value);
-	input.disabled = true;
-}
-function vote(targetId, yes) {
-	socket.emit('vote', myRoom, targetId, yes);
-	myVotes[targetId] = yes;
-	renderPanel();
-}
-function renderScores() {
-	const list = document.getElementById('scorelist');
-	list.innerHTML = players.slice().sort((a,b) => b.score - a.score)
-		.map(p => `<li>${p.name}: ${p.score}</li>`).join('');
-}
-
-  // 2. 记录"笔"的状态
-  let drawing = false;    // 是否正在画
-  let lastX = 0, lastY = 0;
-  let strokes = [];
-  let myRoom = null;
-  let current = null;
-  let pen = { color: '#ff0000' , width: 4 };
-  document.getElementById('colorpick').addEventListener('input', (e) =>
-	  {
-		  pen.color = e.target.value
-	  });
-
-  document.getElementById('widthpick').addEventListener('input', (e) =>
-	  {
-		  pen.width = Number(e.target.value)
-	  });
-  document.getElementById('clearbtn').addEventListener('click', (e) =>
-	  {
-		  strokes = [];
-		  redraw();
-	  });
-  document.getElementById('undobtn').addEventListener('click', (e) =>
-          {
-                  strokes.pop();
-                  redraw();
-          });
-  document.getElementById('createbtn').addEventListener('click', (e)=>{
-	  const name = document.getElementById('nameinput').value || '无名氏';
-	  socket.emit('create-room', name, (code) => {
-	  	myRoom = code;
-		document.getElementById('myroom').textContent = '房间号：' + code;
-	  });
-  });
-document.getElementById('startbtn').addEventListener('click', (e)=>{
-	socket.emit('start-game',myRoom);	  
-});
-
-  document.getElementById('joinbtn').addEventListener('click',(e)=>{
-	  const code = document.getElementById('roominput').value;
-	  const name = document.getElementById('nameinput').value || '无名氏';
-	  socket.emit('join-room', code, name, (res)=>{
-	  	if(res.ok) { 
-			myRoom = code;
-			document.getElementById('myroom').textContent = '房间号：' + code;
-		} else {
-			alert(res.msg || '加入失败');
-		}
-	  }); 
-  });
-  function drawStroke(s)  {
-	  ctx.strokeStyle = s.color;
-	  ctx.lineWidth = s.width;
-	  ctx.lineCap = 'round';
-	  ctx.lineJoin = 'round';
-	  ctx.beginPath();
-	  ctx.moveTo(s.points[0].x , s.points[0].y);
-	  for (let i =1; i < s.points.length; i++){
-		  ctx.lineTo(s.points[i].x , s.points[i].y);
-	  }
-	  ctx.stroke();
-  }
-  function redraw() {
-	  ctx.clearRect(0,0,canvas.width,canvas.height);
-	  strokes.forEach(drawStroke);
-  }
-
-  // 3. 把浏览器坐标换算成画布内部坐标
-  function pos(e) {
-    const rect = canvas.getBoundingClientRect();
-    return {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top
-    };
-  }
-
-    // 4. 按下鼠标 → 开始画
-  canvas.addEventListener('mousedown', (e) => {
-    drawing = true;
-    const p = pos(e);
-    lastX = p.x; lastY = p.y;
-    current = {color : pen.color , width : pen.width , points: [p] };
-    strokes.push(current);
-  });
-
-  // 5. 移动鼠标 → 从上一个点画线到当前点
-  canvas.addEventListener('mousemove', (e) => {
-    if (!drawing) return;
-    const p = pos(e);
-    ctx.strokeStyle = pen.color ;
-    current.points.push({ x : p.x , y : p.y});
-    ctx.lineWidth = pen.width ;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.beginPath();
-    ctx.moveTo(lastX, lastY);
-    ctx.lineTo(p.x, p.y);
-    ctx.stroke();
-    lastX = p.x; lastY = p.y;
-  });
-
-  // 6. 松开鼠标 → 停止
-  canvas.addEventListener('mouseup', () => { 
-	  drawing = false;
-	  if(phase ==='drawing' && isDrawer)socket.emit('stroke',{room:myRoom , stroke:current});
-	  current=null;
-  });
-  canvas.addEventListener('mouseleave', () => { drawing = false; });
-
-</script>
-</body>
+    <head>
+        <meta charset="utf-8">
+        <title>你画我猜</title>
+        <link rel="stylesheet" href="style.css">
+        <!-- socket.io 客户端要先于模块加载，模块里直接用全局的 io() -->
+        <script src="/socket.io/socket.io.js"></script>
+        <script type="module" src="js/main.js"></script>
+    </head>
+    <body>
+        <input id="nameinput" placeholder="你的名字">
+        <button id="createbtn">创建房间</button>
+        <input id="roominput" placeholder="输入房间号">
+        <button id="joinbtn">加入房间</button>
+        <span id="myroom">当前没有房间</span>
+        <button id="startbtn">开始游戏（房主）</button>
+        <span id="status">等待加入</span>
+        <span id="countdown"></span>
+        <div id="toolbar">
+            <input type="color" id="colorpick" value="#ff0000">选择颜色
+            <input type="range" id="widthpick" min="1" max="10" value="4">1-10
+            <button id="clearbtn">清空画布</button>
+            <button id="undobtn">撤销上一笔</button>
+        </div>
+        <canvas id="board" width="800" height="500"></canvas>
+        <div id="panel"></div>
+        <div id="scorepanel">
+            <div id="scoretitle">分数榜（先到100分胜）</div>
+            <ul id="scorelist"></ul>
+        </div>
+    </body>
 </html>

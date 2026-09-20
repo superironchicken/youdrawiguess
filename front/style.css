@@ -1,0 +1,5 @@
+canvas { border: 1px solid #ccc; cursor: crosshair; }
+#scorepanel { position: fixed; right: 10px; top: 10px; border: 1px solid #ccc; padding: 10px; background: #fff; min-width: 140px; }
+#scorelist { list-style: none; padding: 0; margin: 5px 0 0 0; }
+#scorelist li { padding: 2px 0; }
+#panel { margin-top: 10px; }
